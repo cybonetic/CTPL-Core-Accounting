@@ -1,0 +1,42 @@
+{
+    "name": "ctpl/core-accounting",
+    "description": "Laravel client for the Core Accounting platform - customers, invoices, credit notes, receipts and ageing",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^11.0|^12.0",
+        "illuminate/http": "^11.0|^12.0",
+        "illuminate/bus": "^11.0|^12.0",
+        "illuminate/queue": "^11.0|^12.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Ctpl\\CoreAccounting\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Ctpl\\CoreAccounting\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Ctpl\\CoreAccounting\\CoreAccountingServiceProvider"
+            ],
+            "aliases": {
+                "CoreAccounting": "Ctpl\\CoreAccounting\\Facades\\CoreAccounting"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
