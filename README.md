@@ -25,7 +25,7 @@ $invoice['grand_total'];       // "29500.0000" - a string, always
 ## Install
 
 ```bash
-composer require ctpl/core-accounting-sdk
+composer require ctpl/core-accounting
 php artisan vendor:publish --tag=core-accounting-config
 ```
 
