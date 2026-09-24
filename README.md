@@ -102,6 +102,74 @@ Three different problems come back as HTTP 403, so `PermissionDenied` can tell t
 
 ---
 
+## Payload encryption
+
+Encrypts the request body on top of TLS, so nothing in between can read an invoice — including
+anything that terminates TLS in the middle. Off by default.
+
+```ini
+CORE_ACCOUNTING_ENCRYPT=true
+CORE_ACCOUNTING_PLATFORM_KEY_PATH=/var/lib/hrms/keys/core-accounting.pem
+CORE_ACCOUNTING_PRIVATE_KEY_PATH=/var/lib/hrms/keys/app.key
+```
+
+**Two key pairs, and they are not interchangeable.**
+
+| | |
+|---|---|
+| Core Accounting's | one **per application**. An administrator generates it on your application's screen and hands you the public half. You encrypt **to** it. |
+| Yours | you generate it; its public half is uploaded on that same screen. Replies come back encrypted to it, and your private half never leaves your server. |
+
+```bash
+openssl genrsa -out app.key 4096 && chmod 400 app.key
+openssl rsa -in app.key -pubout -out app.pub     # upload app.pub, keep app.key
+```
+
+For Core Accounting's key, put the file you were given in `CORE_ACCOUNTING_PLATFORM_KEY_PATH` (or
+the PEM itself in `CORE_ACCOUNTING_PLATFORM_KEY`). **A bare public key or the self-signed
+certificate over it both work** — the SDK takes the key out of the certificate. Both are in the
+export archive from that screen.
+
+Nothing is fetched at runtime. The administrator handing you that file is the out-of-band step, so
+there is no thumbprint to pin against it: a key already in your hand cannot usefully be checked
+against itself.
+
+### What it does and does not prove
+
+Encryption gives **confidentiality and integrity**, not identity. The platform's public key is
+public — anybody can encrypt to it. Who is calling is proved by the three credential headers, which
+stay *outside* the envelope so a request can be attributed and refused before anything is decrypted.
+
+The signature, if you use one, covers the **ciphertext** — the SDK encrypts and then signs, in that
+order, because the platform verifies before it decrypts.
+
+Reads are not encrypted. A GET has no body, and its parameters travel in the query string; the
+platform offers no way to hide those and this SDK does not pretend otherwise.
+
+### When the key is rotated
+
+Generating a new pair on your application's screen publishes it and marks the old one *superseded* —
+still able to decrypt, so nothing breaks the moment it happens. Replace the file, and the old key is
+retired once you have moved.
+
+Every envelope carries a `kid`, the SHA-256 thumbprint of the key it was encrypted to, which is how
+the platform picks the right one during that overlap. The SDK derives it from the key you configured
+— including when you configured a certificate, because hashing the certificate instead would name a
+key the platform cannot find and would fail *only* during a rotation.
+
+### The awkward bit, if you are writing another client
+
+PHP's `openssl_public_encrypt()` is hard-wired to **SHA-1** OAEP and the platform requires SHA-512,
+so this SDK implements RFC 8017 padding by hand — and checks it against the `openssl` command line
+in both directions rather than against its own inverse. That is not caution for its own sake: a
+deliberately broken MGF1 counter round-trips through itself perfectly and is caught only by the
+interop test.
+
+`docs/payload-encryption.md` in the platform repo has the full wire contract, including the
+per-language OAEP incantations. Java's is the one that catches people.
+
+---
+
 ## Five things to know before you write any code
 
 ### 1. Money is a string. A float will be refused.
@@ -189,6 +257,10 @@ Each error code from the platform is its own class, so a `catch` can be specific
 | `ImmutableDocument` | you tried to edit a posted document | never |
 | `LedgerUnavailable` | unreachable, timed out, 5xx, 429 | **yes** |
 | `GenericFailure` | anything else — including a redirect, refused rather than followed | never |
+| `EncryptionFailed` | a key is missing, a pinned thumbprint did not match, a reply would not open | never |
+
+`EncryptionFailed` is deliberately **not** a `CoreAccountingException`: those describe something the
+ledger said, and this one means the request never reached it or its answer never got back.
 
 `PermissionDenied` also answers `needsSignature()`, `signatureExpired()` and
 `signatureDidNotMatch()` — see **Request signing** above, since all three arrive as 403 and are

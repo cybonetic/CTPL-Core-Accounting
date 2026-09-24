@@ -81,6 +81,74 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Payload encryption
+    |--------------------------------------------------------------------------
+    |
+    | Encrypts the request body on top of TLS, so that nothing between this
+    | application and Core Accounting can read an invoice - including anything
+    | that terminates TLS in the middle.
+    |
+    | Off by default. Turning it on needs two things in place: a Core Accounting
+    | key pair for THIS application, which an administrator generates on its
+    | screen in the back office, and a key pair of your own whose public half
+    | you upload there so replies can be encrypted back to you.
+    |
+    | The two are easy to confuse and they are not interchangeable:
+    |
+    |   public_key       Core Accounting's. You encrypt TO it.
+    |   private_key      Yours. You decrypt replies WITH it. It never leaves here.
+    |
+    */
+
+    'encryption' => [
+
+        'enabled' => (bool) env('CORE_ACCOUNTING_ENCRYPT', false),
+
+        /*
+        | Core Accounting's public key for THIS application - the key you
+        | encrypt to.
+        |
+        | An administrator generates the key pair on this application's screen
+        | in the back office and hands you the public half. Either the bare key
+        | or the self-signed certificate over it will do; both are in the export
+        | archive from that screen, and the SDK takes the key out of the
+        | certificate if that is what it is given.
+        |
+        | Nothing is fetched at runtime. The administrator handing you this file
+        | is the out-of-band step, so there is no thumbprint to pin against it -
+        | a key already in your hand cannot usefully be checked against itself.
+        */
+        'public_key' => env('CORE_ACCOUNTING_PLATFORM_KEY'),
+
+        'public_key_path' => env('CORE_ACCOUNTING_PLATFORM_KEY_PATH'),
+
+        /*
+        | Normally left alone.
+        |
+        | The `kid` in every envelope is the SHA-256 thumbprint of the key
+        | above, which the SDK works out for itself. Set this only if Core
+        | Accounting ever publishes an identifier that is not that - in which
+        | case an envelope naming the wrong one still decrypts, by falling back
+        | to whatever key is current, right up until a rotation makes the
+        | fallback the wrong key.
+        */
+        'kid' => env('CORE_ACCOUNTING_PLATFORM_KEY_ID'),
+
+        /*
+        | THIS application's private key, which opens the replies.
+        |
+        | A file at 0400 outside the document root, or injected inline where a
+        | platform has nowhere to put a file. Core Accounting holds only the
+        | matching public half, which you uploaded on the same screen.
+        */
+        'private_key_path' => env('CORE_ACCOUNTING_PRIVATE_KEY_PATH'),
+
+        'private_key' => env('CORE_ACCOUNTING_PRIVATE_KEY'),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Timeouts
     |--------------------------------------------------------------------------
     |

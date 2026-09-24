@@ -4,12 +4,17 @@ declare(strict_types=1);
 
 namespace Ctpl\CoreAccounting\Http;
 
+use Ctpl\CoreAccounting\Crypto\Envelope as Sealed;
+use Ctpl\CoreAccounting\Crypto\PlatformKey;
 use Ctpl\CoreAccounting\Exceptions\CoreAccountingException;
+use Ctpl\CoreAccounting\Exceptions\EncryptionFailed;
 use Ctpl\CoreAccounting\Exceptions\LedgerUnavailable;
 use Ctpl\CoreAccounting\Jobs\DeliverDeferredWrite;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
+use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Support\Facades\Bus;
 use Throwable;
 
@@ -48,6 +53,9 @@ class Connection
         private readonly array $config,
         private readonly ?int $companyId = null,
     ) {}
+
+    /** Held for the life of this connection once resolved. */
+    private ?PlatformKey $platformKey = null;
 
     /** A connection acting for a different legal entity, sharing everything else. */
     public function forCompany(int $companyId): self
@@ -130,13 +138,33 @@ class Connection
                 $isWrite = $method !== 'get';
                 $body = $isWrite ? $this->encode($data) : '';
 
+                /*
+                 * Encrypted BEFORE it is signed, and that order is not a
+                 * preference.
+                 *
+                 * The platform verifies the signature before it decrypts -
+                 * signature verification has to see the bytes that actually
+                 * arrived, and source attribution has to see the body the
+                 * controller will read. So the signature covers the CIPHERTEXT.
+                 * Signing the plaintext and then encrypting would produce a
+                 * signature over bytes the platform never sees.
+                 *
+                 * A GET has nothing to encrypt. Its parameters are in the query
+                 * string, which this layer does not hide - the platform does
+                 * not offer a way to encrypt those, and pretending otherwise
+                 * would be worse than saying so.
+                 */
+                if ($isWrite && $this->encrypts()) {
+                    $body = $this->encode(Sealed::seal($body, $this->platformKey()->pem(), $this->platformKey()->kid()));
+                }
+
                 $request = $this->request($idempotencyKey, $body);
 
                 $response = $isWrite
                     ? $request->withBody($body, 'application/json')->{$method}($url)
                     : $request->{$method}($url, $data);
 
-                return Envelope::open($response, $url);
+                return Envelope::open($this->decipher($response), $url);
             } catch (CoreAccountingException $e) {
                 /*
                  * Only unavailability is retried. A 422 repeated is a 422; a 403
@@ -283,6 +311,100 @@ class Connection
             // application would believe it had raised an invoice that does not
             // exist. See Envelope::redirected().
             ->withOptions(['http_errors' => false, 'allow_redirects' => false]);
+    }
+
+    // -----------------------------------------------------------------
+    // Payload encryption
+    // -----------------------------------------------------------------
+
+    /** Is this application configured to encrypt what it sends? */
+    protected function encrypts(): bool
+    {
+        return (bool) ($this->config['encryption']['enabled'] ?? false);
+    }
+
+    /**
+     * The platform key, from configuration, resolved once and held.
+     *
+     * Nothing is fetched. An administrator generated the key pair on this
+     * application's screen in the back office and handed over the public half;
+     * that delivery is the out-of-band step, and a key already in hand needs no
+     * thumbprint pinned against it.
+     */
+    protected function platformKey(): PlatformKey
+    {
+        return $this->platformKey ??= new PlatformKey($this->config['encryption'] ?? []);
+    }
+
+    /**
+     * Open an encrypted reply, leaving a plaintext one alone.
+     *
+     * Detected by shape rather than by whether we encrypted the request. The
+     * platform encrypts a reply when the request was encrypted OR when the
+     * application is flagged as requiring it, and those are not the same
+     * condition - an application switched over at the server while its config
+     * still says otherwise would otherwise be handed ciphertext it silently
+     * failed to parse.
+     *
+     * **The status code is preserved.** A 422 stays a 422: the envelope layer
+     * branches on status before it has decrypted anything, and a client that
+     * has lost its key still has to tell a refusal from a success.
+     */
+    protected function decipher(Response $response): Response
+    {
+        $body = json_decode((string) $response->body(), true);
+
+        if (! Sealed::looksLikeOne($body)) {
+            return $response;
+        }
+
+        $privateKey = $this->applicationPrivateKey();
+
+        $plaintext = Sealed::open($body, $privateKey);
+
+        return new Response(new Psr7Response(
+            $response->status(),
+            $response->headers(),
+            $plaintext,
+        ));
+    }
+
+    /**
+     * This application's OWN private key, which reads the replies.
+     *
+     * A different key from the one in `platformKey()` and easy to confuse with
+     * it. This half never leaves this application - Core Accounting holds only
+     * the public half, uploaded once - and it is the reason a reply encrypted
+     * to this application cannot be read by anybody else, including the
+     * platform's other integrations.
+     */
+    protected function applicationPrivateKey(): string
+    {
+        $inline = trim((string) ($this->config['encryption']['private_key'] ?? ''));
+        $path = trim((string) ($this->config['encryption']['private_key_path'] ?? ''));
+
+        if ($inline !== '') {
+            return $inline;
+        }
+
+        if ($path === '') {
+            throw new EncryptionFailed(
+                'Core Accounting sent an encrypted reply and this application has no private key to '
+                .'open it with. Set CORE_ACCOUNTING_PRIVATE_KEY_PATH to the key whose public half you '
+                .'uploaded on the application\'s screen. If you did not mean to receive ciphertext, '
+                .'the application is flagged as requiring encryption at the server.'
+            );
+        }
+
+        if (! is_file($path) || ! is_readable($path)) {
+            throw new EncryptionFailed(sprintf(
+                'The private key file %s does not exist or cannot be read by %s.',
+                $path,
+                function_exists('get_current_user') ? get_current_user() : 'this process'
+            ));
+        }
+
+        return (string) file_get_contents($path);
     }
 
     /**
