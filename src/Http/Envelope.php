@@ -187,10 +187,27 @@ final class Envelope
                     Signature::TOLERANCE_SECONDS
                 );
             } elseif (str_contains($message, 'does not match the payload')) {
-                $message .= ' The secret is being accepted but the bytes disagree. This is almost '
-                    .'always a body serialised twice - once to sign and once to send - rather than a '
-                    .'wrong secret. The SDK sends the exact string it signed; something re-encoding '
-                    .'the body in between, such as a proxy that reformats JSON, will break it.';
+                /*
+                 * Two causes, and the platform cannot tell them apart.
+                 *
+                 * It computes an HMAC from the body it received and the secret
+                 * it holds, and compares. A WRONG SECRET and ALTERED BYTES both
+                 * fail that comparison and both produce this one sentence.
+                 *
+                 * An earlier version of this message asserted that the secret
+                 * was fine and the bytes had been re-encoded. That was a claim
+                 * the platform had given no evidence for, and it steered people
+                 * away from the likelier of the two - a secret that was rotated,
+                 * or a config cache still holding the previous one. Say both,
+                 * cheapest first.
+                 */
+                $message .= ' Two things produce this and the platform cannot tell them apart. '
+                    .'FIRST, and likelier: the signing secret here is not the one the platform holds '
+                    .'- it was rotated (there is no overlap; a new one takes effect immediately), or '
+                    .'the .env was changed without `php artisan config:clear` so a cached config is '
+                    .'still signing with the old value. SECOND: the bytes arriving differ from the '
+                    .'bytes signed, which this SDK does not cause - it transmits the exact string it '
+                    .'signed - but something between, such as a proxy that reformats JSON, would.';
             }
         }
 

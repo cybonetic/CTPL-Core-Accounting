@@ -36,6 +36,7 @@ final class InvoiceLine implements \JsonSerializable
         private readonly ?Money $discount,
         private readonly ?int $revenueAccountId,
         private readonly ?string $revenueAccountCode,
+        private readonly ?bool $priceIncludesTax = null,
     ) {}
 
     /**
@@ -53,6 +54,20 @@ final class InvoiceLine implements \JsonSerializable
         Money|string|int|null $discount = null,
         ?int $revenueAccountId = null,
         ?string $revenueAccountCode = null,
+        /**
+         * Whether `$unitPrice` already contains the tax.
+         *
+         * Null - the default - means the ledger decides from the tax code,
+         * which is how every line behaved before this existed.
+         *
+         * Set it to TRUE when the figure you hold is what the customer was
+         * actually charged. Sending a tax-inclusive 990 without saying so is
+         * not an error anywhere: the ledger adds 18% on top, raises an invoice
+         * for 1,168.20, overstates revenue by 151.02 and reports output tax
+         * that was never collected. Nothing fails until the receivable will
+         * not clear.
+         */
+        ?bool $priceIncludesTax = null,
     ): self {
         $description = trim($description);
 
@@ -82,6 +97,23 @@ final class InvoiceLine implements \JsonSerializable
             discount: $discount === null ? null : Money::of($discount),
             revenueAccountId: $revenueAccountId,
             revenueAccountCode: $revenueAccountCode,
+            priceIncludesTax: $priceIncludesTax,
+        );
+    }
+
+    /**
+     * The same line, declared tax-inclusive.
+     *
+     * `false` is a statement and not an omission: it overrides a document that
+     * said its prices were inclusive, which is what a reimbursed expense on an
+     * otherwise inclusive invoice needs.
+     */
+    public function withPriceIncludingTax(bool $includes = true): self
+    {
+        return new self(
+            $this->description, $this->unitPrice, $this->quantity, $this->unit, $this->hsnSac,
+            $this->taxCodeId, $this->costCentreId, $this->discount, $this->revenueAccountId,
+            $this->revenueAccountCode, $includes,
         );
     }
 
@@ -91,7 +123,7 @@ final class InvoiceLine implements \JsonSerializable
         return new self(
             $this->description, $this->unitPrice, $this->quantity, $this->unit, $this->hsnSac,
             $this->taxCodeId, $costCentreId, $this->discount, $this->revenueAccountId,
-            $this->revenueAccountCode,
+            $this->revenueAccountCode, $this->priceIncludesTax,
         );
     }
 
@@ -100,7 +132,7 @@ final class InvoiceLine implements \JsonSerializable
         return new self(
             $this->description, $this->unitPrice, $this->quantity, $this->unit, $this->hsnSac,
             $taxCodeId, $this->costCentreId, $this->discount, $this->revenueAccountId,
-            $this->revenueAccountCode,
+            $this->revenueAccountCode, $this->priceIncludesTax,
         );
     }
 
@@ -123,6 +155,11 @@ final class InvoiceLine implements \JsonSerializable
             'discount_amount' => $this->discount?->value(),
             'revenue_account_id' => $this->revenueAccountId,
             'revenue_account_code' => $this->revenueAccountCode,
+            // Filtered on `!== null`, not on truthiness, so an explicit FALSE
+            // survives. It has to: false is how one line opts out of a document
+            // that declared its prices inclusive, and dropping it would turn
+            // that line back into an inclusive one without saying so.
+            'price_includes_tax' => $this->priceIncludesTax,
         ], static fn ($value) => $value !== null);
     }
 

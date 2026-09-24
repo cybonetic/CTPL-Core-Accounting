@@ -42,6 +42,18 @@ class Invoices extends Resource
         ?string $sourceSystem = null,
         ?string $sourceId = null,
         array $attributes = [],
+        /**
+         * Whether the unit prices on this invoice already contain the tax.
+         *
+         * A document-wide answer; a line can override it either way with
+         * `InvoiceLine::withPriceIncludingTax()`. Left null, each line follows
+         * its tax code, which is the behaviour every caller had before this
+         * parameter existed.
+         *
+         * Last in the signature, after `$attributes`, so that adding it cannot
+         * shift a positional argument in code already calling this.
+         */
+        ?bool $pricesIncludeTax = null,
     ): array {
         if ($lines === []) {
             throw new InvalidArgumentException('An invoice needs at least one line.');
@@ -53,6 +65,7 @@ class Invoices extends Resource
             'place_of_supply' => $placeOfSupply,
             'source_system' => $sourceSystem,
             'source_id' => $sourceId,
+            'prices_include_tax' => $pricesIncludeTax,
             'lines' => array_map(
                 static fn ($line) => $line instanceof InvoiceLine ? $line->toArray() : $line,
                 array_values($lines),
