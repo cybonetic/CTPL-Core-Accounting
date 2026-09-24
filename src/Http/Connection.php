@@ -96,6 +96,26 @@ class Connection
     }
 
     /**
+     * A POST that creates nothing, and therefore carries no idempotency key.
+     *
+     * A handful of endpoints are POSTs because they take an action, not because
+     * they write a document - refreshing a payment lookup is one. Giving those
+     * a key would be actively wrong: the key exists so that a retry REPLAYS the
+     * first answer, and the whole point of retrying a lookup is to get a new
+     * one.
+     *
+     * Separate from `post()` rather than a nullable argument on it, so that
+     * omitting a key on a real write stays impossible.
+     *
+     * @param  array<string,mixed>  $payload
+     * @return array{data: mixed, meta: array<string,mixed>, request_id: ?string}
+     */
+    public function act(string $path, array $payload = []): array
+    {
+        return $this->send('post', $path, $payload, null);
+    }
+
+    /**
      * @param  array<string,mixed>  $payload
      * @return array{data: mixed, meta: array<string,mixed>, request_id: ?string}
      */

@@ -1,8 +1,10 @@
-# SDK delta — tax-inclusive prices, and one corrected error message
+# SDK delta — sending the gateway payment id
 
-Four files. No config change, no new dependency, nothing to migrate.
+Five files. No config change, no new dependency, nothing to migrate.
 
-Apply after `sdk-encryption-delta.zip`. Then:
+Apply after `sdk-inclusive-delta.zip`. Needs the platform's `payments-and-numbers-delta.zip`: an
+older Core Accounting ignores the field, which would leave you sending a payment id that nothing
+records — and no error to tell you.
 
 ```bash
 cd /var/www/<your-app>
@@ -11,60 +13,79 @@ php artisan config:clear
 
 ---
 
-## 1. Prices that already contain the tax
+## The answer to "was this in the SDK?" — it was not, until now
 
-Needs the matching platform delta (`inclusive-tax-delta.zip`) — the fields are ignored by an older
-Core Accounting, which would leave you with the wrong invoice and no error.
+The platform has accepted `payment_id` on `POST /api/v1/invoices` since the last delta. The SDK had
+no parameter for it. It was reachable through the `$attributes` bag, but undiscoverable and
+unchecked, which is not an integration anybody should be asked to find.
 
-`unit_price` is the price **before** tax unless you say otherwise. Sending the figure the customer
-actually paid without saying so is silent: the tax goes on top, the invoice is for more than was
-collected, and it is found when the receipt will not clear the receivable.
+---
+
+## Sending it
 
 ```php
 $ledger->invoices()->create(
     customerId: 4,
-    lines: [InvoiceLine::make('Consultation', '990.00', hsnSac: '998311')],
+    lines: [InvoiceLine::make('Consultation', '11800.00', hsnSac: '998311')],
     idempotencyKey: $key,
-    pricesIncludeTax: true,
+    sourceSystem: 'hrms',
+    paymentId: $booking->razorpay_payment_id,
 );
 ```
 
-```
-taxable 838.98   tax 151.02   grand 990.00
-```
+**One field. The id your gateway gave you, and nothing else.**
 
-Per line instead, or as well:
+Core Accounting calls **your** payment-status endpoint with that id, stores whatever comes back, and
+posts the payment into the gateway's clearing account if — and only if — the reply says the money
+was **captured**.
+
+**Do not also send the amount, the status or the method.** They are established from your endpoint.
+Two sources for one fact will disagree the first time a webhook arrives late, and the one in the
+ledger is the one that is wrong. There is a test asserting the SDK sends the id and nothing else.
+
+`authorized` is **not** captured — the gateway is holding a block on the card and has not taken the
+money, and posting it would put an amount in the clearing account the gateway does not owe you.
+
+Omit `paymentId` and nothing happens: no endpoint is called, no payment recorded.
+
+**A failed lookup never fails the invoice.** The document is numbered and posted before the lookup
+runs. An endpoint that is down leaves a row to retry, visible on the invoice screen.
+
+## Paid after the invoice was raised
+
+On a reminder, or a payment link days later:
 
 ```php
-InvoiceLine::make('Consultation', '990.00', priceIncludesTax: true);
-
-// One reimbursed expense opting out of an otherwise inclusive invoice.
-InvoiceLine::make('Travel', '1000.00')->withPriceIncludingTax(false);
+$ledger->payments()->attach($invoiceId, $paymentId, $key);
+$ledger->payments()->refresh($paymentRecordId);   // your endpoint was down earlier
+$ledger->payments()->forDocument($invoiceId);
 ```
 
-`false` is a statement and not an omission — it beats a document that said `true`. Omit the field
-entirely and the ledger's tax code decides, which is what your code does today: **upgrading changes
-nothing until you pass the flag.**
+The same id twice is the same payment and returns the record already held, so a retried webhook is
+harmless. The same id against a *different* document is refused — if the customer paid for two, the
+gateway issued two ids.
 
-`pricesIncludeTax` is the **last** parameter of `create()`, after `$attributes`, so it cannot shift a
-positional argument in code you have already written.
+## `paymentId` is last in the signature
 
-## 2. The "signature does not match the payload" message
+After `$attributes` and after `$pricesIncludeTax`, so it cannot shift a positional argument in code
+you have already written. A new parameter inserted before `$attributes` would have made `$sourceId`
+land in `$attributes`, and the first symptom would be invoices attributed to the wrong application.
+There is a test for that too.
 
-`src/Http/Envelope.php` only. The old text asserted that your signing secret was being accepted and
-that the bytes had been altered in transit. The platform gives no evidence for that — it computes one
-HMAC and compares, and a wrong secret and altered bytes fail identically. The message now names both,
-with the likelier first: a rotated secret, or a `.env` changed without `php artisan config:clear`.
+## One new method on `Connection`
+
+`act()` — a POST that creates nothing and therefore carries **no** idempotency key. Refreshing a
+lookup is the only caller today. Giving it a key would be actively wrong: a key makes a retry replay
+the first answer, and a lookup is being retried precisely because the first answer was a failure.
+
+It is a separate method rather than a nullable argument on `post()`, so that omitting a key on a real
+write stays impossible.
 
 ---
 
 ## Verified
 
-**61 tests** (up from 56). The new ones assert what goes **on the wire**, since the SDK computes
-nothing here and the only thing it can get wrong is failing to say what it was told:
+**69 tests** (up from 61). Both new guards proved by reverting them:
 
-- an explicit `false` survives the null-pruning that strips absent fields — written on truthiness it
-  would not, and the line opting *out* would arrive saying nothing and be treated as inclusive
-- `withCostCentre()` and `withTaxCode()` rebuild a line positionally, so both were proved to carry
-  the new property through by removing it and watching the test fail
-- an invoice that says nothing sends **no key at all**, so the platform's third state is preserved
+- the `payment_id` line removed from the payload — the test failed
+- `refresh()` given a fixed idempotency key — the test asserting it sends none failed

@@ -54,6 +54,28 @@ class Invoices extends Resource
          * shift a positional argument in code already calling this.
          */
         ?bool $pricesIncludeTax = null,
+        /**
+         * The gateway payment id, if the customer has already paid.
+         *
+         * **The only thing your application needs to know about the payment.**
+         * Send the id your gateway gave you - `pay_...` from Razorpay, the
+         * order id from Cashfree, PayU or PhonePe - and Core Accounting calls
+         * your own payment-status endpoint afterwards for the rest: the amount,
+         * the method, the bank reference, whether it actually succeeded.
+         *
+         * It is attached inside the transaction that raises the invoice, so the
+         * reference cannot be lost while the invoice survives. The lookup runs
+         * after that transaction commits and **cannot fail the invoice**: an
+         * endpoint that is down leaves a row to retry, not a refused document.
+         *
+         * Omit it and nothing happens - no endpoint is called and no payment is
+         * recorded. Payment arriving later goes through
+         * `$ledger->payments()->attach()`.
+         *
+         * Last in the signature, like `$pricesIncludeTax`, so adding it cannot
+         * shift a positional argument in code already written.
+         */
+        ?string $paymentId = null,
     ): array {
         if ($lines === []) {
             throw new InvalidArgumentException('An invoice needs at least one line.');
@@ -66,6 +88,7 @@ class Invoices extends Resource
             'source_system' => $sourceSystem,
             'source_id' => $sourceId,
             'prices_include_tax' => $pricesIncludeTax,
+            'payment_id' => $paymentId,
             'lines' => array_map(
                 static fn ($line) => $line instanceof InvoiceLine ? $line->toArray() : $line,
                 array_values($lines),

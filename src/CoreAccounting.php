@@ -8,6 +8,7 @@ use Ctpl\CoreAccounting\Http\Connection;
 use Ctpl\CoreAccounting\Resources\Customers;
 use Ctpl\CoreAccounting\Resources\Invoices;
 use Ctpl\CoreAccounting\Resources\Notes;
+use Ctpl\CoreAccounting\Resources\Payments;
 use Ctpl\CoreAccounting\Resources\Receipts;
 use Ctpl\CoreAccounting\Resources\Receivables;
 
@@ -63,6 +64,18 @@ class CoreAccounting
     public function notes(): Notes
     {
         return new Notes($this->connection);
+    }
+
+    /**
+     * Gateway payment ids attached to documents raised earlier.
+     *
+     * When the customer has already paid, send the id with the invoice instead:
+     * `invoices()->create(..., paymentId: 'pay_ABC123')` is one call rather
+     * than two, and the id lands in the same transaction as the document.
+     */
+    public function payments(): Payments
+    {
+        return new Payments($this->connection);
     }
 
     public function receipts(): Receipts
