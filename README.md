@@ -25,7 +25,7 @@ $invoice['grand_total'];       // "29500.0000" - a string, always
 ## Install
 
 ```bash
-composer require ctpl/core-accounting
+composer require ctpl/core-accounting-sdk
 php artisan vendor:publish --tag=core-accounting-config
 ```
 
@@ -34,6 +34,9 @@ CORE_ACCOUNTING_APP_ID=CTPL-HRMS-PROD
 CORE_ACCOUNTING_KEY=ak_...
 CORE_ACCOUNTING_SECRET=...
 CORE_ACCOUNTING_COMPANY_ID=1
+
+# Only if your credential was registered with signing switched on
+CORE_ACCOUNTING_SIGNING_SECRET=...
 ```
 
 **There is no URL to set.** `https://cacc.cybonetic.com` is compiled into the package, so an
@@ -61,6 +64,41 @@ fails.
 The message names the likely cause when the redirect points back at the address just requested,
 which is the signature of a proxy terminating TLS and reaching the application over plain HTTP while
 the application insists on HTTPS. That is a deployment fix, not a code one.
+
+### Request signing
+
+Some credentials are registered to require it. If yours is, every call is refused until
+`CORE_ACCOUNTING_SIGNING_SECRET` is set:
+
+```
+This credential requires a signed request. Send X-Signature: t=<unix>,v1=<hmac>.
+```
+
+Set it and the SDK signs automatically — there is nothing to call. The secret is a **fourth**
+value, separate from the three credentials, and an administrator shows it from the application's
+screen in the back office. The three credentials prove *who is calling*; the signature proves *this
+body is the body that caller sent*, which is what stops something holding a stolen key from altering
+an invoice in transit.
+
+If you are implementing this yourself rather than using the SDK, the one rule that matters:
+
+> **Sign the bytes you send.** The signed string is `"<unix timestamp>.<raw body>"`, HMAC-SHA256,
+> hex, and the platform recomputes it from the bytes that actually arrived. Serialise the body once,
+> sign that string, send that string. Handing an array to an HTTP client and separately
+> `json_encode`-ing it to sign is how you get a signature that is wrong by one escaped slash while
+> the body in your log looks perfect.
+
+A GET has no body, so it signs `"<timestamp>."` — the separator stays.
+
+Three different problems come back as HTTP 403, so `PermissionDenied` can tell them apart:
+
+```php
+} catch (PermissionDenied $e) {
+    $e->needsSignature();        // no secret configured — set the env var
+    $e->signatureExpired();      // clock drift; ±300s is the window
+    $e->signatureDidNotMatch();  // the bytes disagree, not the secret
+}
+```
 
 ---
 
@@ -151,6 +189,10 @@ Each error code from the platform is its own class, so a `catch` can be specific
 | `ImmutableDocument` | you tried to edit a posted document | never |
 | `LedgerUnavailable` | unreachable, timed out, 5xx, 429 | **yes** |
 | `GenericFailure` | anything else — including a redirect, refused rather than followed | never |
+
+`PermissionDenied` also answers `needsSignature()`, `signatureExpired()` and
+`signatureDidNotMatch()` — see **Request signing** above, since all three arrive as 403 and are
+fixed by different people.
 
 `ValidationFailed` and `AccountingRuleViolation` share HTTP 422 and mean opposite things — one is
 your payload, the other is a rule your payload obeyed the shape of. The SDK branches on the error

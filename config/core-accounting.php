@@ -44,6 +44,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Request signing
+    |--------------------------------------------------------------------------
+    |
+    | A FOURTH secret, separate from the three above, and only issued to
+    | credentials registered with signing switched on. Leave it blank if yours
+    | was not: the SDK then sends no signature, which is correct rather than
+    | merely permitted.
+    |
+    | What it buys is different from what the credentials buy. The credentials
+    | prove who is calling. The signature proves that the body is the body that
+    | caller sent - so something holding a stolen key cannot alter an invoice on
+    | its way through a proxy.
+    |
+    | If a request is refused with "This credential requires a signed request",
+    | this is the blank line. An administrator can show it again from the
+    | application's screen in the back office.
+    |
+    */
+
+    'signing_secret' => env('CORE_ACCOUNTING_SIGNING_SECRET'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Which legal entity
     |--------------------------------------------------------------------------
     |

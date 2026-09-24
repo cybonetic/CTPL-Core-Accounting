@@ -113,7 +113,28 @@ class Connection
             try {
                 $url = $this->url($path);
 
-                $response = $this->request($idempotencyKey)->{$method}($url, $data);
+                /*
+                 * The body is serialised HERE, once, and the same string is
+                 * both signed and sent.
+                 *
+                 * Letting the HTTP client encode the array while signing a
+                 * separately-encoded copy of it is how a signature that looks
+                 * right fails every time: the two encoders disagree over an
+                 * escaped slash or a unicode character, the bytes differ, and
+                 * the platform - which recomputes from what actually arrived -
+                 * refuses. See Signature.
+                 *
+                 * A GET carries its parameters in the query string and has no
+                 * body at all, so it signs the empty string.
+                 */
+                $isWrite = $method !== 'get';
+                $body = $isWrite ? $this->encode($data) : '';
+
+                $request = $this->request($idempotencyKey, $body);
+
+                $response = $isWrite
+                    ? $request->withBody($body, 'application/json')->{$method}($url)
+                    : $request->{$method}($url, $data);
 
                 return Envelope::open($response, $url);
             } catch (CoreAccountingException $e) {
@@ -203,7 +224,11 @@ class Connection
         }
     }
 
-    protected function request(?string $idempotencyKey = null): PendingRequest
+    /**
+     * @param  string  $body  the exact bytes that will be transmitted, which is
+     *                        what the signature must be computed over
+     */
+    protected function request(?string $idempotencyKey = null, string $body = ''): PendingRequest
     {
         $headers = [
             self::HEADER_APP_ID => (string) ($this->config['app_id'] ?? ''),
@@ -222,6 +247,27 @@ class Connection
             $headers[self::HEADER_IDEMPOTENCY] = $idempotencyKey;
         }
 
+        /*
+         * Signed only when a signing secret is configured.
+         *
+         * Not every credential requires it, and sending a signature computed
+         * with an empty secret would be worse than sending none: the platform
+         * would compare it against the real one and refuse with "the signature
+         * does not match the payload", which sends somebody looking at their
+         * body serialisation rather than at the blank line in their .env.
+         *
+         * The signature is recomputed on every attempt rather than reused,
+         * because its timestamp is inside the signed string and a retry a few
+         * seconds later must carry a fresh one. The idempotency key stays the
+         * same - that is what makes the retry a replay rather than a second
+         * write - but the signature cannot.
+         */
+        $signingSecret = (string) ($this->config['signing_secret'] ?? '');
+
+        if ($signingSecret !== '') {
+            $headers[Signature::HEADER] = Signature::header($body, $signingSecret);
+        }
+
         return $this->http
             ->withHeaders($headers)
             ->timeout((int) ($this->config['timeout'] ?? 15))
@@ -237,6 +283,22 @@ class Connection
             // application would believe it had raised an invoice that does not
             // exist. See Envelope::redirected().
             ->withOptions(['http_errors' => false, 'allow_redirects' => false]);
+    }
+
+    /**
+     * The request body, as the one canonical string.
+     *
+     * `JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE` is not cosmetic here.
+     * They are the flags Laravel's own `asJson()` would have used, so a body
+     * built by this method is byte-identical to one the client would have
+     * produced - which keeps the two paths interchangeable and stops a future
+     * edit reintroducing the mismatch this method exists to prevent.
+     *
+     * @param  array<string,mixed>  $data
+     */
+    protected function encode(array $data): string
+    {
+        return json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     }
 
     protected function url(string $path): string

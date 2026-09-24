@@ -165,6 +165,35 @@ final class Envelope
             $message .= sprintf(' Grant "%s" to this application.', (string) $details['permission']);
         }
 
+        /*
+         * A 403 about signing is not a permissions problem, and saying so here
+         * saves somebody going to an administrator to ask for a scope they
+         * already have.
+         *
+         * Three different causes wear the same status code, so each gets the
+         * instruction that actually fixes it. The env var is named because that
+         * is where the answer goes.
+         */
+        if ($class === PermissionDenied::class) {
+            if (str_contains($message, 'X-Signature') || str_contains($message, 'signed request')) {
+                $message .= ' Set CORE_ACCOUNTING_SIGNING_SECRET to the signing secret for this '
+                    .'application; the SDK signs every request once it is present. An administrator '
+                    .'can show it again from the application\'s screen in the back office.';
+            } elseif (str_contains($message, 'outside the accepted window')) {
+                $message .= sprintf(
+                    ' The signature carries a timestamp and the platform allows %d seconds either '
+                    .'way, so this is a clock that has drifted rather than a wrong secret. Check NTP '
+                    .'on the machine making the call.',
+                    Signature::TOLERANCE_SECONDS
+                );
+            } elseif (str_contains($message, 'does not match the payload')) {
+                $message .= ' The secret is being accepted but the bytes disagree. This is almost '
+                    .'always a body serialised twice - once to sign and once to send - rather than a '
+                    .'wrong secret. The SDK sends the exact string it signed; something re-encoding '
+                    .'the body in between, such as a proxy that reformats JSON, will break it.';
+            }
+        }
+
         return new $class($message, $code, $details, $requestId, $status);
     }
 }
